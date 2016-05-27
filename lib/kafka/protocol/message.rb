@@ -10,22 +10,22 @@ module Kafka
     #         Crc => int32
     #         MagicByte => int8
     #         Attributes => int8
+    #         (optional) Timestamp => int64
     #         Key => bytes
     #         Value => bytes
     #
     class Message
-      MAGIC_BYTE = 0
-
-      attr_reader :key, :value, :codec_id, :offset
+      attr_reader :key, :value, :codec_id, :offset, :timestamp
 
       attr_reader :bytesize, :create_time
 
-      def initialize(value:, key: nil, create_time: Time.now, codec_id: 0, offset: -1)
+      def initialize(value:, key: nil, create_time: Time.now, codec_id: 0, offset: -1, timestamp: nil)
         @key = key
         @value = value
         @codec_id = codec_id
         @offset = offset
         @create_time = create_time
+        @timestamp = timestamp
 
         @bytesize = @key.to_s.bytesize + @value.to_s.bytesize
       end
@@ -41,7 +41,8 @@ module Kafka
         @key == other.key &&
           @value == other.value &&
           @codec_id == other.codec_id &&
-          @offset == other.offset
+          @offset == other.offset &&
+          @timestamp == other.timestamp
       end
 
       def compressed?
@@ -65,12 +66,12 @@ module Kafka
 
         crc = message_decoder.int32
         magic_byte = message_decoder.int8
-
-        unless magic_byte == MAGIC_BYTE
-          raise Kafka::Error, "Invalid magic byte: #{magic_byte}"
+        unless magic_byte == 0 || magic_byte == 1
+          raise Kafka::Error, "Unsupported message with magic byte: #{magic_byte}"
         end
-
         attributes = message_decoder.int8
+
+        timestamp = message_decoder.int64 if magic_byte > 0
         key = message_decoder.bytes
         value = message_decoder.bytes
 
@@ -78,7 +79,7 @@ module Kafka
         # attributes.
         codec_id = attributes & 0b111
 
-        new(key: key, value: value, codec_id: codec_id, offset: offset)
+        new(key: key, value: value, codec_id: codec_id, offset: offset, timestamp: timestamp)
       end
 
       private
@@ -100,8 +101,9 @@ module Kafka
         buffer = StringIO.new
         encoder = Encoder.new(buffer)
 
-        encoder.write_int8(MAGIC_BYTE)
+        encoder.write_int8(@timestamp.nil? ? 0 : 1) # magic byte
         encoder.write_int8(@codec_id)
+        encoder.write_int64(@timestamp) unless @timestamp.nil?
         encoder.write_bytes(@key)
         encoder.write_bytes(@value)
 
